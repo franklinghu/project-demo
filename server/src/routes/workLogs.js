@@ -1,24 +1,17 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
+const dbWrapper = require('../db');
 
 const router = express.Router();
 
-// Cached database instance
-let dbInstance = null;
-
-// Get DB instance (cached)
-async function getDB() {
-  if (!dbInstance) {
-    dbInstance = await require('../db');
-  }
-  return dbInstance;
-}
+// Get DB instance synchronously
+const getDb = () => dbWrapper.getDb();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'project-management-secret-key-2026';
 
 // Middleware: Verify token
-const authenticate = async (req, res, next) => {
+const authenticate = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: '未登录' });
   
@@ -26,7 +19,7 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.userId = decoded.userId;
     req.userRole = decoded.role;
-    req.db = await getDB();
+    
     next();
   } catch (err) {
     return res.status(401).json({ error: '登录已过期' });
@@ -54,7 +47,7 @@ router.get('/work-logs/my', authenticate, async (req, res) => {
     if (status) { sql += ' AND wl.status = ?'; params.push(status); }
     
     sql += ' ORDER BY wl.date DESC, wl.created_at DESC';
-    const logs = db.prepare(sql).all(...params);
+    const logs = getDb().prepare(sql).all(...params);
     res.json(logs);
   } catch (err) {
     console.error(err);
@@ -93,7 +86,7 @@ router.get('/work-logs', authenticate, async (req, res) => {
     if (departmentId) { sql += ' AND u.department_id = ?'; params.push(departmentId); }
     
     sql += ' ORDER BY wl.date DESC, wl.created_at DESC';
-    const logs = db.prepare(sql).all(...params);
+    const logs = getDb().prepare(sql).all(...params);
     res.json(logs);
   } catch (err) {
     console.error(err);
@@ -124,22 +117,22 @@ router.post('/work-logs', authenticate, async (req, res) => {
     const logId = uuidv4();
     
     // If there's an existing log for this date, update it instead
-    const existing = db.prepare('SELECT id FROM work_logs WHERE user_id = ? AND date = ?').get(req.userId, date);
+    const existing = getDb().prepare('SELECT id FROM work_logs WHERE user_id = ? AND date = ?').get(req.userId, date);
     
     if (existing) {
-      db.prepare(`
+      getDb().prepare(`
         UPDATE work_logs SET project_id = ?, hours = ?, description = ?, updated_at = datetime('now')
         WHERE id = ?
       `).run(projectId || null, hours, description || null, existing.id);
     } else {
-      db.prepare(`
+      getDb().prepare(`
         INSERT INTO work_logs (id, user_id, project_id, date, hours, description, status)
         VALUES (?, ?, ?, ?, ?, ?, 'pending')
       `).run(logId, req.userId, projectId || null, date, hours, description || null);
     }
     
     // Get the (updated) record
-    const log = db.prepare(`
+    const log = getDb().prepare(`
       SELECT wl.*, p.name as project_name
       FROM work_logs wl
       LEFT JOIN projects p ON wl.project_id = p.id
@@ -160,7 +153,7 @@ router.put('/work-logs/:id', authenticate, async (req, res) => {
     const { projectId, date, hours, description } = req.body;
     const logId = req.params.id;
     
-    const existing = db.prepare('SELECT * FROM work_logs WHERE id = ?').get(logId);
+    const existing = getDb().prepare('SELECT * FROM work_logs WHERE id = ?').get(logId);
     if (!existing) return res.status(404).json({ error: '工时记录不存在' });
     
     // Only owner or manager can update
@@ -175,13 +168,13 @@ router.put('/work-logs/:id', authenticate, async (req, res) => {
       return res.status(400).json({ error: '已审批的记录无法修改' });
     }
     
-    db.prepare(`
+    getDb().prepare(`
       UPDATE work_logs SET project_id = COALESCE(?, project_id), date = COALESCE(?, date),
       hours = COALESCE(?, hours), description = COALESCE(?, description), updated_at = datetime('now')
       WHERE id = ?
     `).run(projectId, date, hours, description, logId);
     
-    const log = db.prepare(`
+    const log = getDb().prepare(`
       SELECT wl.*, p.name as project_name
       FROM work_logs wl
       LEFT JOIN projects p ON wl.project_id = p.id
@@ -210,19 +203,19 @@ router.patch('/work-logs/:id/review', authenticate, async (req, res) => {
     }
     
     const logId = req.params.id;
-    const existing = db.prepare('SELECT * FROM work_logs WHERE id = ?').get(logId);
+    const existing = getDb().prepare('SELECT * FROM work_logs WHERE id = ?').get(logId);
     if (!existing) return res.status(404).json({ error: '工时记录不存在' });
     
     // Include comment in description if provided
     const description = comment ? `${existing.description || ''}\n\n审批意见: ${comment}` : existing.description;
     
-    db.prepare(`
+    getDb().prepare(`
       UPDATE work_logs SET status = ?, approver_id = ?, approved_at = datetime('now'),
       description = ?, updated_at = datetime('now')
       WHERE id = ?
     `).run(status, req.userId, description, logId);
     
-    const log = db.prepare(`
+    const log = getDb().prepare(`
       SELECT wl.*, p.name as project_name, u.real_name as approver_name
       FROM work_logs wl
       LEFT JOIN projects p ON wl.project_id = p.id
@@ -257,14 +250,14 @@ router.get('/work-logs/stats', authenticate, async (req, res) => {
     if (userId) { whereClause += ' AND wl.user_id = ?'; params.push(userId); }
     if (departmentId) { whereClause += ' AND u.department_id = ?'; params.push(departmentId); }
     
-    const total = db.prepare(`
+    const total = getDb().prepare(`
       SELECT SUM(wl.hours) as total_hours, COUNT(*) as total_count
       FROM work_logs wl
       LEFT JOIN users u ON wl.user_id = u.id
       ${whereClause}
     `).get(...params);
     
-    const byStatus = db.prepare(`
+    const byStatus = getDb().prepare(`
       SELECT wl.status, SUM(wl.hours) as hours, COUNT(*) as count
       FROM work_logs wl
       LEFT JOIN users u ON wl.user_id = u.id
@@ -272,7 +265,7 @@ router.get('/work-logs/stats', authenticate, async (req, res) => {
       GROUP BY wl.status
     `).all(...params);
     
-    const byProject = db.prepare(`
+    const byProject = getDb().prepare(`
       SELECT p.name as project_name, SUM(wl.hours) as hours, COUNT(*) as count
       FROM work_logs wl
       LEFT JOIN projects p ON wl.project_id = p.id
@@ -281,7 +274,7 @@ router.get('/work-logs/stats', authenticate, async (req, res) => {
       GROUP BY wl.project_id
     `).all(...params);
     
-    const byUser = db.prepare(`
+    const byUser = getDb().prepare(`
       SELECT u.real_name as user_name, u.id as user_id, SUM(wl.hours) as hours, COUNT(*) as count
       FROM work_logs wl
       LEFT JOIN users u ON wl.user_id = u.id
@@ -309,7 +302,7 @@ router.delete('/work-logs/:id', authenticate, async (req, res) => {
     const db = req.db;
     const logId = req.params.id;
     
-    const existing = db.prepare('SELECT * FROM work_logs WHERE id = ?').get(logId);
+    const existing = getDb().prepare('SELECT * FROM work_logs WHERE id = ?').get(logId);
     if (!existing) return res.status(404).json({ error: '工时记录不存在' });
     
     // Only owner or manager can delete
@@ -324,7 +317,7 @@ router.delete('/work-logs/:id', authenticate, async (req, res) => {
       return res.status(400).json({ error: '已审批的记录无法删除' });
     }
     
-    db.prepare('DELETE FROM work_logs WHERE id = ?').run(logId);
+    getDb().prepare('DELETE FROM work_logs WHERE id = ?').run(logId);
     res.json({ message: '工时记录已删除' });
   } catch (err) {
     console.error(err);
