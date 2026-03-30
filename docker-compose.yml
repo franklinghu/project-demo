@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: demo-server
+    ports:
+      - "3001:3001"
+    volumes:
+      - server-data:/app/data
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    container_name: demo-client
+    ports:
+      - "80:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  server-data:

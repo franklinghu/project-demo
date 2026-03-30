@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  nginx-proxy:
+    image: jwilder/nginx-proxy
+    container_name: demo-nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./html:/usr/share/nginx/html
+      - ./vhost.d:/etc/nginx/vhost.d
+    networks:
+      - demo-network
+    restart: unless-stopped
+
+  letsencrypt:
+    image: jrcs/letsencrypt-nginx-proxy-companion
+    container_name: demo-letsencrypt
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./certs:/etc/nginx/certs
+      - ./vhost.d:/etc/nginx/vhost.d
+    environment:
+      - DEFAULT_EMAIL=admin@example.com
+    depends_on:
+      - nginx-proxy
+    networks:
+      - demo-network
+    restart: unless-stopped
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: demo-server
+    expose:
+      - "3001"
+    environment:
+      - VIRTUAL_HOST=demo.local
+      - VIRTUAL_PORT=3001
+    volumes:
+      - server-data:/app/data
+    restart: unless-stopped
+    networks:
+      - demo-network
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    container_name: demo-client
+    expose:
+      - "80"
+    environment:
+      - VIRTUAL_HOST=demo.local
+      - VIRTUAL_PORT=80
+    depends_on:
+      - server
+    restart: unless-stopped
+    networks:
+      - demo-network
+
+networks:
+  demo-network:
+    external: false
+
+volumes:
+  server-data:
