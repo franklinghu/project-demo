@@ -2,8 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const dbWrapper = require('../db');
-const getDb = dbWrapper.getDb;
+const db = require('../db');
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'project-management-secret-key-2026';
@@ -49,7 +48,7 @@ router.post('/register', (req, res) => {
     }
     
     // Check if user exists
-    const existing = getDb().prepare('SELECT id FROM users WHERE username = ? OR email = ?').get(username, email);
+    const existing = db.prepare('SELECT id FROM users WHERE username = ? OR email = ?').get(username, email);
     if (existing) {
       return res.status(400).json({ error: '用户名或邮箱已存在' });
     }
@@ -57,7 +56,7 @@ router.post('/register', (req, res) => {
     const hashedPassword = bcrypt.hashSync(password, 10);
     const userId = uuidv4();
     
-    getDb().prepare(`
+    db.prepare(`
       INSERT INTO users (id, username, email, password, real_name, phone, role, status)
       VALUES (?, ?, ?, ?, ?, ?, 'employee', 'active')
     `).run(userId, username, email, hashedPassword, realName || username, phone || null);
@@ -84,7 +83,7 @@ router.post('/login', (req, res) => {
       return res.status(400).json({ error: '用户名和密码为必填项' });
     }
     
-    const user = getDb().prepare('SELECT * FROM users WHERE username = ? OR email = ?').get(username, username);
+    const user = db.prepare('SELECT * FROM users WHERE username = ? OR email = ?').get(username, username);
     if (!user) {
       return res.status(401).json({ error: '用户名或密码错误' });
     }
@@ -102,7 +101,7 @@ router.post('/login', (req, res) => {
     // Get department name
     let departmentName = null;
     if (user.department_id) {
-      const dept = getDb().prepare('SELECT name FROM departments WHERE id = ?').get(user.department_id);
+      const dept = db.prepare('SELECT name FROM departments WHERE id = ?').get(user.department_id);
       departmentName = dept?.name;
     }
     
@@ -130,7 +129,7 @@ router.post('/login', (req, res) => {
 // Get current user info
 router.get('/me', authenticate, (req, res) => {
   try {
-    const user = getDb().prepare(`
+    const user = db.prepare(`
       SELECT id, username, email, real_name, phone, role, department_id, status, created_at
       FROM users WHERE id = ?
     `).get(req.userId);
@@ -141,7 +140,7 @@ router.get('/me', authenticate, (req, res) => {
     
     let departmentName = null;
     if (user.department_id) {
-      const dept = getDb().prepare('SELECT name FROM departments WHERE id = ?').get(user.department_id);
+      const dept = db.prepare('SELECT name FROM departments WHERE id = ?').get(user.department_id);
       departmentName = dept?.name;
     }
     
@@ -172,13 +171,13 @@ router.post('/change-password', authenticate, (req, res) => {
       return res.status(400).json({ error: '旧密码和新密码为必填项' });
     }
     
-    const user = getDb().prepare('SELECT password FROM users WHERE id = ?').get(req.userId);
+    const user = db.prepare('SELECT password FROM users WHERE id = ?').get(req.userId);
     if (!bcrypt.compareSync(oldPassword, user.password)) {
       return res.status(400).json({ error: '旧密码错误' });
     }
     
     const hashedPassword = bcrypt.hashSync(newPassword, 10);
-    getDb().prepare('UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    db.prepare('UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
       .run(hashedPassword, req.userId);
     
     res.json({ message: '密码修改成功' });

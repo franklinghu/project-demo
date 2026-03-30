@@ -1,7 +1,6 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const dbWrapper = require('../db');
-const getDb = dbWrapper.getDb;
+const db = require('../db');
 
 const router = express.Router();
 
@@ -35,7 +34,7 @@ const requireAdmin = (req, res, next) => {
 // Get all departments (tree structure)
 router.get('/departments', authenticate, (req, res) => {
   try {
-    const departments = getDb().prepare(`
+    const departments = db.prepare(`
       SELECT d.*, u.real_name as manager_name
       FROM departments d
       LEFT JOIN users u ON d.manager_id = u.id
@@ -67,7 +66,7 @@ router.get('/departments', authenticate, (req, res) => {
 // Get all departments (flat list)
 router.get('/departments/flat', authenticate, (req, res) => {
   try {
-    const departments = getDb().prepare(`
+    const departments = db.prepare(`
       SELECT d.*, u.real_name as manager_name
       FROM departments d
       LEFT JOIN users u ON d.manager_id = u.id
@@ -84,7 +83,7 @@ router.get('/departments/flat', authenticate, (req, res) => {
 // Get department detail
 router.get('/departments/:id', authenticate, (req, res) => {
   try {
-    const dept = getDb().prepare(`
+    const dept = db.prepare(`
       SELECT d.*, u.real_name as manager_name
       FROM departments d
       LEFT JOIN users u ON d.manager_id = u.id
@@ -96,13 +95,13 @@ router.get('/departments/:id', authenticate, (req, res) => {
     }
     
     // Get members
-    const members = getDb().prepare(`
-      SELECT id, username, real_name, email, phone, role
+    const members = db.prepare(`
+      SELECT id, username, real_name, email, phone, role, position
       FROM users WHERE department_id = ?
     `).all(req.params.id);
     
     // Get child departments
-    const children = getDb().prepare(`
+    const children = db.prepare(`
       SELECT id, name FROM departments WHERE parent_id = ?
     `).all(req.params.id);
     
@@ -123,23 +122,23 @@ router.post('/departments', authenticate, requireAdmin, (req, res) => {
     }
     
     // Check name uniqueness
-    const exists = getDb().prepare('SELECT id FROM departments WHERE name = ?').get(name);
+    const exists = db.prepare('SELECT id FROM departments WHERE name = ?').get(name);
     if (exists) {
       return res.status(400).json({ error: '部门名称已存在' });
     }
     
     const deptId = uuidv4();
-    getDb().prepare(`
+    db.prepare(`
       INSERT INTO departments (id, name, parent_id, manager_id, description)
       VALUES (?, ?, ?, ?, ?)
     `).run(deptId, name, parentId || null, managerId || null, description || null);
     
     // Update manager's department if specified
     if (managerId) {
-      getDb().prepare('UPDATE users SET department_id = ? WHERE id = ?').run(deptId, managerId);
+      db.prepare('UPDATE users SET department_id = ? WHERE id = ?').run(deptId, managerId);
     }
     
-    const dept = getDb().prepare('SELECT * FROM departments WHERE id = ?').get(deptId);
+    const dept = db.prepare('SELECT * FROM departments WHERE id = ?').get(deptId);
     res.status(201).json(dept);
   } catch (err) {
     console.error(err);
@@ -153,20 +152,20 @@ router.put('/departments/:id', authenticate, requireAdmin, (req, res) => {
     const { name, parentId, managerId, description } = req.body;
     const deptId = req.params.id;
     
-    const exists = getDb().prepare('SELECT id FROM departments WHERE id = ?').get(deptId);
+    const exists = db.prepare('SELECT id FROM departments WHERE id = ?').get(deptId);
     if (!exists) {
       return res.status(404).json({ error: '部门不存在' });
     }
     
     // Check name uniqueness (exclude self)
     if (name) {
-      const nameExists = getDb().prepare('SELECT id FROM departments WHERE name = ? AND id != ?').get(name, deptId);
+      const nameExists = db.prepare('SELECT id FROM departments WHERE name = ? AND id != ?').get(name, deptId);
       if (nameExists) {
         return res.status(400).json({ error: '部门名称已存在' });
       }
     }
     
-    getDb().prepare(`
+    db.prepare(`
       UPDATE departments 
       SET name = COALESCE(?, name),
           parent_id = COALESCE(?, parent_id),
@@ -178,10 +177,10 @@ router.put('/departments/:id', authenticate, requireAdmin, (req, res) => {
     
     // Update manager's department if specified
     if (managerId) {
-      getDb().prepare('UPDATE users SET department_id = ? WHERE id = ?').run(deptId, managerId);
+      db.prepare('UPDATE users SET department_id = ? WHERE id = ?').run(deptId, managerId);
     }
     
-    const dept = getDb().prepare('SELECT * FROM departments WHERE id = ?').get(deptId);
+    const dept = db.prepare('SELECT * FROM departments WHERE id = ?').get(deptId);
     res.json(dept);
   } catch (err) {
     console.error(err);
@@ -194,24 +193,24 @@ router.delete('/departments/:id', authenticate, requireAdmin, (req, res) => {
   try {
     const deptId = req.params.id;
     
-    const exists = getDb().prepare('SELECT id FROM departments WHERE id = ?').get(deptId);
+    const exists = db.prepare('SELECT id FROM departments WHERE id = ?').get(deptId);
     if (!exists) {
       return res.status(404).json({ error: '部门不存在' });
     }
     
     // Check if has members
-    const members = getDb().prepare('SELECT COUNT(*) as count FROM users WHERE department_id = ?').get(deptId);
+    const members = db.prepare('SELECT COUNT(*) as count FROM users WHERE department_id = ?').get(deptId);
     if (members.count > 0) {
       return res.status(400).json({ error: '该部门下有成员，无法删除' });
     }
     
     // Check if has children
-    const children = getDb().prepare('SELECT COUNT(*) as count FROM departments WHERE parent_id = ?').get(deptId);
+    const children = db.prepare('SELECT COUNT(*) as count FROM departments WHERE parent_id = ?').get(deptId);
     if (children.count > 0) {
       return res.status(400).json({ error: '该部门有子部门，无法删除' });
     }
     
-    getDb().prepare('DELETE FROM departments WHERE id = ?').run(deptId);
+    db.prepare('DELETE FROM departments WHERE id = ?').run(deptId);
     res.json({ message: '删除成功' });
   } catch (err) {
     console.error(err);
@@ -250,7 +249,7 @@ router.get('/users', authenticate, (req, res) => {
     
     sql += ' ORDER BY u.created_at DESC';
     
-    const users = getDb().prepare(sql).all(...params);
+    const users = db.prepare(sql).all(...params);
     res.json(users);
   } catch (err) {
     console.error(err);
@@ -261,7 +260,7 @@ router.get('/users', authenticate, (req, res) => {
 // Get user detail
 router.get('/users/:id', authenticate, (req, res) => {
   try {
-    const user = getDb().prepare(`
+    const user = db.prepare(`
       SELECT u.*, d.name as department_name
       FROM users u
       LEFT JOIN departments d ON u.department_id = d.id
@@ -288,12 +287,12 @@ router.put('/users/:id', authenticate, requireAdmin, (req, res) => {
     const { realName, phone, role, departmentId, status } = req.body;
     const userId = req.params.id;
     
-    const exists = getDb().prepare('SELECT id FROM users WHERE id = ?').get(userId);
+    const exists = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
     if (!exists) {
       return res.status(404).json({ error: '用户不存在' });
     }
     
-    getDb().prepare(`
+    db.prepare(`
       UPDATE users 
       SET real_name = COALESCE(?, real_name),
           phone = COALESCE(?, phone),
@@ -304,7 +303,7 @@ router.put('/users/:id', authenticate, requireAdmin, (req, res) => {
       WHERE id = ?
     `).run(realName, phone, role, departmentId, status, userId);
     
-    const user = getDb().prepare(`
+    const user = db.prepare(`
       SELECT id, username, email, real_name, phone, role, department_id, status
       FROM users WHERE id = ?
     `).get(userId);
@@ -321,7 +320,7 @@ router.delete('/users/:id', authenticate, requireAdmin, (req, res) => {
   try {
     const userId = req.params.id;
     
-    const user = getDb().prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
+    const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
     if (!user) {
       return res.status(404).json({ error: '用户不存在' });
     }
@@ -330,7 +329,7 @@ router.delete('/users/:id', authenticate, requireAdmin, (req, res) => {
       return res.status(400).json({ error: '无法删除管理员' });
     }
     
-    getDb().prepare('UPDATE users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    db.prepare('UPDATE users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
       .run('inactive', userId);
     
     res.json({ message: '用户已禁用' });
@@ -343,12 +342,12 @@ router.delete('/users/:id', authenticate, requireAdmin, (req, res) => {
 // Get organization stats
 router.get('/stats', authenticate, (req, res) => {
   try {
-    const totalUsers = getDb().prepare('SELECT COUNT(*) as count FROM users WHERE status = ?').get('active');
-    const totalDepartments = getDb().prepare('SELECT COUNT(*) as count FROM departments').get();
-    const byRole = getDb().prepare(`
+    const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users WHERE status = ?').get('active');
+    const totalDepartments = db.prepare('SELECT COUNT(*) as count FROM departments').get();
+    const byRole = db.prepare(`
       SELECT role, COUNT(*) as count FROM users WHERE status = 'active' GROUP BY role
     `).all();
-    const byDepartment = getDb().prepare(`
+    const byDepartment = db.prepare(`
       SELECT d.name, COUNT(u.id) as count 
       FROM departments d 
       LEFT JOIN users u ON d.id = u.department_id AND u.status = 'active'

@@ -233,12 +233,8 @@ async function initDB() {
   return db;
 }
 
-// Database instance
-let dbInstance = null;
-
-// Initialize and export
-initDB().then(database => {
-  dbInstance = database;
+// Export as promise
+module.exports = initDB().then(database => {
   // Override prepare to add save after write
   const originalPrepare = database.prepare.bind(database);
   database.prepare = function(sql) {
@@ -250,14 +246,5 @@ initDB().then(database => {
     };
     return stmt;
   };
+  return database;
 });
-
-// Export a function to get db synchronously
-module.exports = {
-  getDb: () => {
-    if (!dbInstance) {
-      throw new Error('Database not initialized yet');
-    }
-    return dbInstance;
-  }
-};

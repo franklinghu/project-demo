@@ -1,17 +1,24 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
-const dbWrapper = require('../db');
 
 const router = express.Router();
 
-// Get DB instance synchronously
-const getDb = () => dbWrapper.getDb();
+// Cached database instance
+let dbInstance = null;
+
+// Get DB instance (cached)
+async function getDB() {
+  if (!dbInstance) {
+    dbInstance = await require('../db');
+  }
+  return dbInstance;
+}
 
 const JWT_SECRET = process.env.JWT_SECRET || 'project-management-secret-key-2026';
 
 // Middleware: Get DB and verify token
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) {
     return res.status(401).json({ error: '未登录' });
@@ -21,7 +28,7 @@ const authenticate = (req, res, next) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.userId = decoded.userId;
     req.userRole = decoded.role;
-    
+    req.db = await getDB();
     next();
   } catch (err) {
     return res.status(401).json({ error: '登录已过期' });
@@ -60,7 +67,7 @@ router.get('/tasks', authenticate, async (req, res) => {
     if (keyword) { sql += ' AND (t.title LIKE ? OR t.description LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`); }
     
     sql += ' ORDER BY t.created_at DESC';
-    const tasks = getDb().prepare(sql).all(...params);
+    const tasks = db.prepare(sql).all(...params);
     res.json(tasks);
   } catch (err) {
     console.error(err);
@@ -72,7 +79,7 @@ router.get('/tasks', authenticate, async (req, res) => {
 router.get('/tasks/:id', authenticate, async (req, res) => {
   try {
     const db = req.db;
-    const task = getDb().prepare(`
+    const task = db.prepare(`
       SELECT t.*, p.name as project_name, c.real_name as creator_name, a.real_name as assignee_name
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
@@ -83,7 +90,7 @@ router.get('/tasks/:id', authenticate, async (req, res) => {
     
     if (!task) return res.status(404).json({ error: '任务不存在' });
     
-    const history = getDb().prepare(`
+    const history = db.prepare(`
       SELECT h.*, u.real_name as changed_by_name
       FROM task_history h LEFT JOIN users u ON h.changed_by = u.id
       WHERE h.task_id = ? ORDER BY h.changed_at DESC
@@ -104,16 +111,16 @@ router.post('/tasks', authenticate, async (req, res) => {
     if (!title) return res.status(400).json({ error: '任务标题为必填项' });
     
     const taskId = uuidv4();
-    getDb().prepare(`
+    db.prepare(`
       INSERT INTO tasks (id, title, description, project_id, priority, creator_id, assignee_id, due_date, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
     `).run(taskId, title, description || null, projectId || null, priority || 'medium', req.userId, assigneeId || null, dueDate || null);
     
     const historyId = uuidv4();
-    getDb().prepare(`INSERT INTO task_history (id, task_id, field_name, new_value, changed_by) VALUES (?, ?, 'status', 'pending', ?)`)
+    db.prepare(`INSERT INTO task_history (id, task_id, field_name, new_value, changed_by) VALUES (?, ?, 'status', 'pending', ?)`)
       .run(historyId, taskId, req.userId);
     
-    const task = getDb().prepare(`
+    const task = db.prepare(`
       SELECT t.*, p.name as project_name, c.real_name as creator_name, a.real_name as assignee_name
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
@@ -136,7 +143,7 @@ router.put('/tasks/:id', authenticate, async (req, res) => {
     const { title, description, projectId, priority, assigneeId, dueDate, status } = req.body;
     const taskId = req.params.id;
     
-    const exists = getDb().prepare('SELECT id, status, assignee_id, creator_id FROM tasks WHERE id = ?').get(taskId);
+    const exists = db.prepare('SELECT id, status, assignee_id, creator_id FROM tasks WHERE id = ?').get(taskId);
     if (!exists) return res.status(404).json({ error: '任务不存在' });
     
     if (req.userRole !== 'admin' && req.userRole !== 'manager') {
@@ -147,11 +154,11 @@ router.put('/tasks/:id', authenticate, async (req, res) => {
     
     if (status && status !== exists.status) {
       const historyId = uuidv4();
-      getDb().prepare(`INSERT INTO task_history (id, task_id, field_name, old_value, new_value, changed_by) VALUES (?, ?, 'status', ?, ?, ?)`)
+      db.prepare(`INSERT INTO task_history (id, task_id, field_name, old_value, new_value, changed_by) VALUES (?, ?, 'status', ?, ?, ?)`)
         .run(historyId, taskId, exists.status, status, req.userId);
     }
     
-    getDb().prepare(`
+    db.prepare(`
       UPDATE tasks SET title = COALESCE(?, title), description = COALESCE(?, description),
       project_id = COALESCE(?, project_id), priority = COALESCE(?, priority),
       assignee_id = COALESCE(?, assignee_id), due_date = COALESCE(?, due_date),
@@ -159,7 +166,7 @@ router.put('/tasks/:id', authenticate, async (req, res) => {
       WHERE id = ?
     `).run(title, description, projectId, priority, assigneeId, dueDate, status, taskId);
     
-    const task = getDb().prepare(`
+    const task = db.prepare(`
       SELECT t.*, p.name as project_name, c.real_name as creator_name, a.real_name as assignee_name
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
@@ -185,7 +192,7 @@ router.patch('/tasks/:id/status', authenticate, async (req, res) => {
     const validStatuses = ['pending', 'in_progress', 'completed', 'cancelled'];
     if (!validStatuses.includes(status)) return res.status(400).json({ error: '无效的任务状态' });
     
-    const exists = getDb().prepare('SELECT id, status, assignee_id, creator_id FROM tasks WHERE id = ?').get(taskId);
+    const exists = db.prepare('SELECT id, status, assignee_id, creator_id FROM tasks WHERE id = ?').get(taskId);
     if (!exists) return res.status(404).json({ error: '任务不存在' });
     
     if (req.userRole !== 'admin' && req.userRole !== 'manager') {
@@ -195,13 +202,13 @@ router.patch('/tasks/:id/status', authenticate, async (req, res) => {
     }
     
     const historyId = uuidv4();
-    getDb().prepare(`INSERT INTO task_history (id, task_id, field_name, old_value, new_value, changed_by) VALUES (?, ?, 'status', ?, ?, ?)`)
+    db.prepare(`INSERT INTO task_history (id, task_id, field_name, old_value, new_value, changed_by) VALUES (?, ?, 'status', ?, ?, ?)`)
       .run(historyId, taskId, exists.status, status, req.userId);
     
-    getDb().prepare(`UPDATE tasks SET status = ?, completed_at = CASE WHEN ? = 'completed' THEN datetime('now') ELSE NULL END, updated_at = datetime('now') WHERE id = ?`)
+    db.prepare(`UPDATE tasks SET status = ?, completed_at = CASE WHEN ? = 'completed' THEN datetime('now') ELSE NULL END, updated_at = datetime('now') WHERE id = ?`)
       .run(status, status, taskId);
     
-    const task = getDb().prepare(`
+    const task = db.prepare(`
       SELECT t.*, p.name as project_name, c.real_name as creator_name, a.real_name as assignee_name
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
@@ -223,15 +230,15 @@ router.delete('/tasks/:id', authenticate, async (req, res) => {
     const db = req.db;
     const taskId = req.params.id;
     
-    const exists = getDb().prepare('SELECT id, creator_id FROM tasks WHERE id = ?').get(taskId);
+    const exists = db.prepare('SELECT id, creator_id FROM tasks WHERE id = ?').get(taskId);
     if (!exists) return res.status(404).json({ error: '任务不存在' });
     
     if (req.userRole !== 'admin' && req.userRole !== 'manager') {
       if (exists.creator_id !== req.userId) return res.status(403).json({ error: '无权限删除此任务' });
     }
     
-    getDb().prepare('DELETE FROM task_history WHERE task_id = ?').run(taskId);
-    getDb().prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
+    db.prepare('DELETE FROM task_history WHERE task_id = ?').run(taskId);
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
     res.json({ message: '任务已删除' });
   } catch (err) {
     console.error(err);
@@ -243,11 +250,11 @@ router.delete('/tasks/:id', authenticate, async (req, res) => {
 router.get('/tasks/stats/summary', authenticate, async (req, res) => {
   try {
     const db = req.db;
-    const total = getDb().prepare('SELECT COUNT(*) as count FROM tasks').get();
-    const pending = getDb().prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending'").get();
-    const inProgress = getDb().prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'in_progress'").get();
-    const completed = getDb().prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'completed'").get();
-    const overdue = getDb().prepare("SELECT COUNT(*) as count FROM tasks WHERE status NOT IN ('completed', 'cancelled') AND due_date < date('now')").get();
+    const total = db.prepare('SELECT COUNT(*) as count FROM tasks').get();
+    const pending = db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending'").get();
+    const inProgress = db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'in_progress'").get();
+    const completed = db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'completed'").get();
+    const overdue = db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status NOT IN ('completed', 'cancelled') AND due_date < date('now')").get();
     
     res.json({
       total: total.count,
